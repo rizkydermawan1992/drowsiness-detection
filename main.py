@@ -1,158 +1,125 @@
-from scipy.spatial import distance as dist
-from imutils import face_utils
-from threading import Thread
-import numpy as np
-import dlib
+from cvzone.FaceMeshModule import FaceMeshDetector
 import cv2
+import pyglet
+from datetime import datetime
+import csv
 import pyfirmata
- 
-pin= 2                           #relay connect to pin 2 Arduino
-port = 'COM7'                    #select port COM, check device manager
+
+cap = cv2.VideoCapture(0)
+cap.set(3, 1280)
+cap.set(4, 720)
+
+pin = 7 #pin 7 Arduino
+port = "COM7"
 board = pyfirmata.Arduino(port)
 
+detector = FaceMeshDetector(maxFaces=1)
+
+breakcount_s, breakcount_y = 0, 0
+counter_s, counter_y = 0, 0
+state_s, state_y = False, False
+faceId = []
+
+sound = pyglet.media.load("alarm.wav", streaming=False)
+board.digital[pin].write(1)
+
+def recordData(condition):
+    file = open("database.csv", "a", newline="")
+    now = datetime.now()
+    dtString = now.strftime('%d-%m-%Y %H:%M:%S')
+    tuple = (dtString, condition)
+    writer = csv.writer(file)
+    writer.writerow(tuple)
+    file.close()
+
+def alert():
+    cv2.rectangle(img, (700, 20), (1250, 80), (0, 0, 255), cv2.FILLED)
+    cv2.putText(img, "DROWSINESS ALERT!!!", (710, 60), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 255), 2)
 
 
-def eye_aspect_ratio(eye):
-	# compute the euclidean distances between the two sets of
-	# vertical eye landmarks (x, y)-coordinates
-	A = dist.euclidean(eye[1], eye[5])
-	B = dist.euclidean(eye[2], eye[4])
 
-	# compute the euclidean distance between the horizontal
-	# eye landmark (x, y)-coordinates
-	C = dist.euclidean(eye[0], eye[3])
-
-	# compute the eye aspect ratio
-	ear = (A + B) / (2.0 * C)
-
-	# return the eye aspect ratio
-	return ear
-
-def mouth_aspect_ratio(mouth):
-	
-	A = dist.euclidean(mouth[13], mouth[19])
-	B = dist.euclidean(mouth[14], mouth[18])
-	C = dist.euclidean(mouth[15], mouth[17])
-
-	# compute the mouth aspect ratio
-	mar = (A+B+C)/3.0
-
-	# return the eye aspect ratio
-	return mar
-
-# define two constants, one for the eye aspect ratio to indicate
-# blink and then a second constant for the number of consecutive
-# frames the eye must be below the threshold for to set off the
-# alarm
-EYE_AR_THRESH = 0.25
-MOUTH_AR_THRESH = 35
-EYE_AR_CONSEC_FRAMES = 10
-
-# initialize the frame counter as well as a boolean used to
-# indicate if the alarm is going off
-COUNTER = 0
-ALARM_ON = False
-
-# initialize dlib's face detector (HOG-based) and then create
-# the facial landmark predictor
-print("[INFO] loading facial landmark predictor...")
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
-
-# grab the indexes of the facial landmarks for the left and
-# right eye, respectively
-(lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
-(rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
-(mStart, mEnd) = face_utils.FACIAL_LANDMARKS_IDXS["mouth"]
-
-# start the video stream thread
-print("[INFO] starting video stream thread...")
-
-vs = cv2.VideoCapture(0)
-vs.set(3, 1280)
-vs.set(4, 720)
-
-
-# loop over frames from the video stream
 while True:
-	# grab the frame from the threaded video file stream, resize
-	# it, and convert it to grayscale
-	# channels)
-	_, frame = vs.read()
-	gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    success, img = cap.read()
+    img = cv2.flip(img, 1)
+    img, faces = detector.findFaceMesh(img, draw = False)
 
-	# detect faces in the grayscale frame
-	rects = detector(gray, 0)
+    if faces:
+        face = faces[0]
+        eyeLeft = [27, 23, 130, 243]  # [up, down, left, right]
+        eyeRight = [257, 253, 463, 359]  # [up, down, left, right]
+        mouth = [11, 16, 57, 287]  # [up, down, left, right]
+        faceId.extend(eyeLeft)
+        faceId.extend(eyeRight)
+        faceId.extend(mouth)
 
-# loop over the face detections
-	for rect in rects:
-		# determine the facial landmarks for the face region, then
-		# convert the facial landmark (x, y)-coordinates to a NumPy
-		# array
-		shapes = predictor(gray, rect)
-		shape = face_utils.shape_to_np(shapes)
+        #calculate eye left ratio
+        eyeLeft_ver, _ = detector.findDistance(face[eyeLeft[0]], face[eyeLeft[1]])
+        eyeLeft_hor, _ = detector.findDistance(face[eyeLeft[2]], face[eyeLeft[3]])
+        eyeLeft_ratio = int((eyeLeft_ver / eyeLeft_hor) * 100)
+        # calculate eye right ratio
+        eyeRight_ver, _ = detector.findDistance(face[eyeRight[0]], face[eyeRight[1]])
+        eyeRight_hor, _ = detector.findDistance(face[eyeRight[2]], face[eyeRight[3]])
+        eyeRight_ratio = int((eyeRight_ver / eyeRight_hor) * 100)
+        # calculate mouth ratio
+        mouth_ver, _ = detector.findDistance(face[mouth[0]], face[mouth[1]])
+        mouth_hor, _ = detector.findDistance(face[mouth[2]], face[mouth[3]])
+        mouth_ratio = int((mouth_ver / mouth_hor) * 100)
 
-		# extract the left and right eye coordinates, then use the
-		# coordinates to compute the eye aspect ratio for both eyes
-		mouth    = shape[mStart:mEnd]
-		leftEye  = shape[lStart:lEnd]
-		rightEye = shape[rStart:rEnd]
-		mar      = mouth_aspect_ratio(mouth)
-		leftEAR  = eye_aspect_ratio(leftEye)
-		rightEAR = eye_aspect_ratio(rightEye)
+        # draw distance line
+        # cv2.line(img, face[eyeLeft[0]], face[eyeLeft[1]], (0,255,0), 2)
+        # cv2.line(img, face[eyeLeft[2]], face[eyeLeft[3]], (0, 255, 0), 2)
+        # cv2.line(img, face[eyeRight[0]], face[eyeRight[1]], (0, 255, 0), 2)
+        # cv2.line(img, face[eyeRight[2]], face[eyeRight[3]], (0, 255, 0), 2)
+        # cv2.line(img, face[mouth[0]], face[mouth[1]], (0, 255, 0), 2)
+        # cv2.line(img, face[mouth[2]], face[mouth[3]], (0, 255, 0), 2)
 
-		# average the eye aspect ratio together for both eyes
-		ear = (leftEAR + rightEAR) / 2.0
-		
+        #text on image
+        cv2.rectangle(img, (30,20), (400,150), (0,255,255), cv2.FILLED)
+        cv2.putText(img, f'Eye Left Ratio: {eyeLeft_ratio}', (50, 60), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2)
+        cv2.putText(img, f'Eye Right Ratio: {eyeRight_ratio}', (50, 100), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2)
+        cv2.putText(img, f'Mouth Ratio: {mouth_ratio}', (50, 140), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2)
 
-		# compute the convex hull for the left and right eye, then
-		# visualize each of the eyes
-		mouthHull    = cv2.convexHull(mouth)
-		leftEyeHull  = cv2.convexHull(leftEye)
-		rightEyeHull = cv2.convexHull(rightEye)
-		cv2.drawContours(frame, [mouthHull], -1, (0, 255, 0), 1)
-		cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 1)
-		cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
+        cv2.rectangle(img, (30, 200), (350, 300), (255, 0, 0), cv2.FILLED)
+        cv2.putText(img, f'Sleep Count: {counter_s}', (40, 240), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
+        cv2.putText(img, f'Yawn Count: {counter_y}', (40, 280), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 255), 2)
 
-	
+        if eyeLeft_ratio <= 50 and eyeRight_ratio <= 50 : # sleep
+            breakcount_s += 1
+            if breakcount_s >= 20:
+                alert()
+                if state_s == False:
+                    counter_s += 1
+                    sound.play()
+                    board.digital[pin].write(0)
+                    recordData("sleep")
+                    state_s = not state_s
+        else:
+            breakcount_s = 0
+            if state_s:
+                board.digital[pin].write(1)
+                state_s = not state_s
 
-		# check to see if the eye aspect ratio is below the blink
-		# threshold, and if so, increment the blink frame counter
-		if mar > MOUTH_AR_THRESH or ear < EYE_AR_THRESH :
-			COUNTER += 1
+        if mouth_ratio > 60 : # yawn
+            breakcount_y += 1
+            if breakcount_y >= 20:
+                alert()
+                if state_y == False:
+                    counter_y += 1
+                    sound.play()
+                    board.digital[pin].write(0)
+                    recordData("Yawn")
+                    state_y = not state_y
+        else:
+            breakcount_y = 0
+            if state_y:
+                board.digital[pin].write(1)
+                state_y = not state_y
 
-			# if the eyes were closed for a sufficient number of
-			# then sound the alarm
-			if COUNTER >= EYE_AR_CONSEC_FRAMES:
-				# draw an alarm on the frame
-				cv2.rectangle(frame, (10, 17), (690, 100), (0, 0, 255), cv2.FILLED)
-				cv2.putText(frame, "DROWSINESS ALERT!!!", (10, 70),
-				cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0), 2)
-				board.digital[pin].write(0)
+        for id in faceId:
+            cv2.circle(img, face[id], 5, (0,0,255), cv2.FILLED)
 
-		# otherwise, the eye aspect ratio is not below the blink
-		# threshold, so reset the counter and alarm
-		else:
-			COUNTER = 0
-			board.digital[pin].write(1)
 
-        # draw the computed eye aspect ratio on the frame to help
-		# with debugging and setting the correct eye aspect ratio
-		# thresholds and frame counters
 
-	
-	cv2.putText(frame, "EAR: {:.2f}".format(ear), (900, 70),
-	cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-	cv2.putText(frame, "MAR: {:.2f}".format(mar), (900, 110),
-	cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
- 
- 
-	# show the frame
-	cv2.imshow("Frame", frame)
-	key = cv2.waitKey(1) & 0xFF
- 
-	# if the `q` key was pressed, break from the loop
-	if key == ord("q"):
-		break
-# do a bit of cleanup
-cv2.destroyAllWindows()
+
+    cv2.imshow("Image", img)
+    cv2.waitKey(1)
